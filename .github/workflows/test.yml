@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Emacs ${{ matrix.emacs-version }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs-version:
+          - "26.1"
+          - "27.2"
+          - "28.2"
+          - "29.4"
+          - "30.2"
+          - snapshot
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: purcell/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      - name: Run tests
+        run: emacs --batch -L . -l ert -l flatbuffers-mode.el -l test/flatbuffers-mode-test.el -f ert-run-tests-batch-and-exit
