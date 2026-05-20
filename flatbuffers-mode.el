@@ -44,13 +44,12 @@
 ;; * Completion at point for keywords, built-in and user-defined type
 ;;   names, and boolean constants.
 ;;
+;; * Flymake backend for on-the-fly syntax checking via flatc.
+;;
 ;; * Comment syntax for both line comments (//) and block comments (/* */).
 ;;
 ;; The mode is activated automatically for files with the .fbs extension.
 
-;; TODO:
-;; * Add Flymake backend using `flatc --file-names-only --warnings-as-errors
-;;   --json path/to/file.fbs' to surface syntax errors in the buffer.
 
 ;;; Code:
 
@@ -63,6 +62,11 @@
   "Number of spaces per indentation level in FlatBuffers schema files."
   :type 'integer
   :safe #'integerp
+  :group 'flatbuffers)
+
+(defcustom flatbuffers-flatc-executable "flatc"
+  "Path to the flatc executable used by the Flymake backend."
+  :type 'string
   :group 'flatbuffers)
 
 ;;; Syntax table
@@ -285,6 +289,80 @@ Offers completion for:
                 :company-kind (lambda (_) 'keyword)
                 :exclusive 'no)))))))
 
+;;; Flymake
+
+(defvar-local flatbuffers--flymake-proc nil
+  "Current Flymake process for `flatbuffers-mode'.")
+
+(defun flatbuffers-flymake (report-fn &rest _args)
+  "Flymake backend for `flatbuffers-mode', reporting diagnostics via REPORT-FN.
+
+Invokes `flatbuffers-flatc-executable' on a temporary copy of the buffer
+so that unsaved edits are checked.  The temporary file is created in the
+same directory as the visited file (if any) so that relative `include'
+directives resolve correctly."
+  (when (process-live-p flatbuffers--flymake-proc)
+    (kill-process flatbuffers--flymake-proc))
+  (let* ((flatc   (or (executable-find flatbuffers-flatc-executable)
+                      (error "Cannot find flatc executable `%s'"
+                             flatbuffers-flatc-executable)))
+         (source  (current-buffer))
+         (tmpdir  (if (buffer-file-name)
+                      (file-name-directory (buffer-file-name))
+                    temporary-file-directory))
+         (tmpfile (make-temp-file (expand-file-name "flatbuffers-mode-" tmpdir)
+                                  nil ".fbs")))
+    (write-region nil nil tmpfile nil 'silent)
+    (save-restriction
+      (widen)
+      (setq flatbuffers--flymake-proc
+            (make-process
+             :name     "flatbuffers-flymake"
+             :noquery  t
+             :connection-type 'pipe
+             :buffer   (generate-new-buffer " *flatbuffers-flymake*")
+             :command  (list flatc
+                             "--file-names-only" "--warnings-as-errors"
+                             "--json" tmpfile)
+             :sentinel
+             (lambda (proc _event)
+               (when (memq (process-status proc) '(exit signal))
+                 (unwind-protect
+                     (if (with-current-buffer source
+                           (eq proc flatbuffers--flymake-proc))
+                         (with-current-buffer (process-buffer proc)
+                           (goto-char (point-min))
+                           (cl-loop
+                             with orig-re = (concat ", originally at: "
+                                                     (regexp-quote tmpfile)
+                                                     ":\\([0-9]+\\)$")
+                             while (re-search-forward
+                                    (concat "^  " (regexp-quote tmpfile)
+                                            ":\\([0-9]+\\): [0-9]+: "
+                                            "\\(error\\|warning\\): \\(.*\\)$")
+                                    nil t)
+                             for reported-line = (string-to-number (match-string 1))
+                             for type    = (if (string= (match-string 2) "warning")
+                                              :warning :error)
+                             for raw-msg = (match-string 3)
+                             ;; Some errors (e.g. unresolved types) are reported at
+                             ;; the end of the file but carry an "originally at:"
+                             ;; suffix pointing at the true source location.  Use
+                             ;; that line when present and drop the suffix from the
+                             ;; displayed message.
+                             for line = (if (string-match orig-re raw-msg)
+                                            (string-to-number (match-string 1 raw-msg))
+                                          reported-line)
+                             for msg  = (replace-regexp-in-string
+                                         ", originally at:.*$" "" raw-msg)
+                             for (beg . end) = (flymake-diag-region source line)
+                             collect (flymake-make-diagnostic source beg end type msg)
+                             into diags
+                             finally (funcall report-fn diags)))
+                       (flymake-log :warning "Cancelling obsolete check %s" proc))
+                   (delete-file tmpfile)
+                   (kill-buffer (process-buffer proc))))))))))
+
 ;;; Mode definition
 
 ;;;###autoload
@@ -299,7 +377,8 @@ Offers completion for:
   (setq-local beginning-of-defun-function #'flatbuffers-beginning-of-defun)
   (setq-local end-of-defun-function       #'flatbuffers-end-of-defun)
   (setq-local imenu-generic-expression    flatbuffers-imenu-generic-expression)
-  (add-hook 'completion-at-point-functions #'flatbuffers-completion-at-point nil t))
+  (add-hook 'completion-at-point-functions #'flatbuffers-completion-at-point nil t)
+  (add-hook 'flymake-diagnostic-functions  #'flatbuffers-flymake nil t))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.fbs\\'" . flatbuffers-mode))

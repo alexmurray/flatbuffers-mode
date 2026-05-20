@@ -8,6 +8,7 @@ Provides an enhanced editing environment for [FlatBuffers](https://flatbuffers.d
 * Syntax highlighting for keywords, built-in types, declaration names, field types, RPC method signatures, and boolean constants
 * Automatic indentation
 * `completion-at-point` for keywords, built-in and user-defined type names, boolean constants, and union member type names
+* Flymake backend for on-the-fly syntax checking (requires `flatc` on `PATH`)
 * Definition navigation via `beginning-of-defun` / `end-of-defun` (<kbd>C-M-a</kbd> / <kbd>C-M-e</kbd>)
 * [Imenu](https://www.gnu.org/software/emacs/manual/html_node/emacs/Imenu.html) support for tables, structs, enums, unions, and RPC services
 * `//` and `/* */` comment handling

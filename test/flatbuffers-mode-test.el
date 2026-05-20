@@ -461,5 +461,64 @@ TEXT is inserted into a temp buffer with point left at end of TEXT."
   (let ((candidates (flatbuffers-test-completions-at "include \"tab")))
     (should-not candidates)))
 
+;;;; Flymake backend
+
+(defun flatbuffers-test-flymake-run-sync (text)
+  "Run the Flymake backend synchronously on TEXT and return the diagnostics."
+  (let (diags done)
+    (with-temp-buffer
+      (flatbuffers-mode)
+      (insert text)
+      (flatbuffers-flymake
+       (lambda (reported)
+         (setq diags reported done t)))
+      (let ((deadline (+ (float-time) 5)))
+        (while (and (not done) (< (float-time) deadline))
+          (accept-process-output nil 0.05))))
+    diags))
+
+(ert-deftest flatbuffers-test-flymake-no-errors-on-valid-schema ()
+  "Flymake reports no diagnostics for a valid schema."
+  (skip-unless (executable-find flatbuffers-flatc-executable))
+  (should-not
+   (flatbuffers-test-flymake-run-sync
+    "table Monster {\n  hp: short;\n}\nroot_type Monster;\n")))
+
+(ert-deftest flatbuffers-test-flymake-reports-error-on-missing-semicolon ()
+  "Flymake reports an error when a field is missing its semicolon."
+  (skip-unless (executable-find flatbuffers-flatc-executable))
+  (let ((diags (flatbuffers-test-flymake-run-sync
+                "table Monster {\n  hp: short\n  name: string;\n}\nroot_type Monster;\n")))
+    (should (= 1 (length diags)))
+    (should (eq :error (flymake-diagnostic-type (car diags))))
+    ;; The error is on line 3 (flatc points at the next token after the missing ;)
+    (with-temp-buffer
+      (insert "table Monster {\n  hp: short\n  name: string;\n}\nroot_type Monster;\n")
+      (should (= 3 (line-number-at-pos
+                    (flymake-diagnostic-beg (car diags))))))))
+
+(ert-deftest flatbuffers-test-flymake-error-type-is-error ()
+  "Flymake diagnostic type is `:error' for flatc errors."
+  (skip-unless (executable-find flatbuffers-flatc-executable))
+  (let ((diags (flatbuffers-test-flymake-run-sync
+                "table Monster {\n  hp short;\n}\n")))
+    (should diags)
+    (should (eq :error (flymake-diagnostic-type (car diags))))))
+
+(ert-deftest flatbuffers-test-flymake-originally-at-maps-to-correct-line ()
+  "Flymake maps \"originally at\" errors to the field line, not the EOF line."
+  (skip-unless (executable-find flatbuffers-flatc-executable))
+  (let ((diags (flatbuffers-test-flymake-run-sync
+                "table Monster {\n  name:strin;\n  health:int;\n}\nroot_type Monster;\n")))
+    (should (= 1 (length diags)))
+    (should (eq :error (flymake-diagnostic-type (car diags))))
+    ;; The error should point at line 2 (name:strin), not line 6 (end of file).
+    (with-temp-buffer
+      (insert "table Monster {\n  name:strin;\n  health:int;\n}\nroot_type Monster;\n")
+      (should (= 2 (line-number-at-pos
+                    (flymake-diagnostic-beg (car diags))))))
+    ;; The "originally at" suffix should be stripped from the message.
+    (should-not (string-match "originally at" (flymake-diagnostic-text (car diags))))))
+
 (provide 'flatbuffers-mode-tests)
 ;;; flatbuffers-mode-tests.el ends here
