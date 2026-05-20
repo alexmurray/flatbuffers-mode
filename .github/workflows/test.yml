@@ -69,4 +69,4 @@ jobs:
             --eval "(package-install 'package-lint)"
 
       - name: Run package-lint
-        run: emacs --batch -L . -f package-lint-batch-and-exit flatbuffers-mode.el
+        run: emacs --batch -L . --eval "(require 'package)" --eval "(package-initialize)" --eval "(require 'package-lint)" -f package-lint-batch-and-exit flatbuffers-mode.el
