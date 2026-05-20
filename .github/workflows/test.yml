@@ -52,13 +52,12 @@ jobs:
                       (with-current-buffer buf
                         (checkdoc-current-buffer t)
                         (let ((diag (get-buffer checkdoc-diagnostic-buffer)))
-                          (when diag
+                          (when (and diag
+                                     (with-current-buffer diag
+                                       (string-match-p \":[0-9]+:\" (buffer-string))))
                             (with-current-buffer diag
-                              (goto-char (point-min))
-                              (forward-line 1)
-                              (unless (eobp)
-                                (message \"%s\" (buffer-string))
-                                (kill-emacs 1)))))))"
+                              (message \"%s\" (buffer-string)))
+                            (kill-emacs 1)))))"
 
       - name: Install package-lint
         run: |
