@@ -215,11 +215,12 @@ are excluded so that `end-of-defun' always finds a matching closing brace."
 
 (defun flatbuffers--in-union-body-p (ppss)
   "Return non-nil if PPSS indicates point is directly inside a union body."
-  (when-let ((open-pos (nth 1 ppss)))
-    (save-excursion
-      (goto-char open-pos)
-      (beginning-of-line)
-      (looking-at "[ \t]*union\\b"))))
+  (let ((open-pos (nth 1 ppss)))
+    (when open-pos
+      (save-excursion
+        (goto-char open-pos)
+        (beginning-of-line)
+        (looking-at "[ \t]*union\\b")))))
 
 (defun flatbuffers-completion-at-point ()
   "FlatBuffers `completion-at-point' function.
