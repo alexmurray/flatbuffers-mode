@@ -48,6 +48,43 @@ The indentation width defaults to 2 spaces and can be customised via
 (setq-default flatbuffers-indent-offset 4)
 ```
 
+## Comparison with other FlatBuffers modes
+
+[Asalle/flatbuffers-mode](https://github.com/Asalle/flatbuffers-mode) is an earlier Emacs mode for FlatBuffers files. This project was written independently to address its limitations.
+
+### Architecture
+
+The historical mode derives from `c-mode`, which drags in the entire CC Mode infrastructure: C-specific indentation rules, electric punctuation, CC Mode hooks, and keybindings that have no meaning in a FlatBuffers schema. This project derives from `prog-mode`, the correct lightweight base for programming language modes.
+
+### Indentation
+
+Because the historical mode inherits `c-mode` indentation, it applies C indentation heuristics to `.fbs` files, which produces incorrect results. This project implements a dedicated brace-counting indentation engine (`flatbuffers-indent-line`) that correctly handles FlatBuffers block structure and is configurable via `flatbuffers-indent-offset`.
+
+### Syntax highlighting
+
+The historical mode recognises only four built-in types (`bool`, `double`, `uint`, `ulong`). This project covers all 22 FlatBuffers scalar and string types, and additionally highlights:
+
+- Boolean constants (`true`/`false`) with `font-lock-constant-face`
+- RPC method parameter and return types
+- Namespace values and `root_type` targets
+
+### Missing features in the historical mode
+
+The following features are absent from the historical mode and provided only by this project:
+
+| Feature | This project | Asalle/flatbuffers-mode |
+|---|---|---|
+| Correct indentation | Yes | No (inherits C rules) |
+| `completion-at-point` | Yes | No |
+| Flymake backend (`flatc`) | Yes | No |
+| Imenu support | Yes | No |
+| `beginning-of-defun` / `end-of-defun` | Yes | No |
+| Boolean constant highlighting | Yes | No |
+| RPC method type highlighting | Yes | No |
+| Full built-in type list (22 types) | Yes | No (4 types only) |
+| Test suite | Yes (68+ ERT tests) | No |
+| CI across multiple Emacs versions | Yes (26.1–snapshot) | No |
+
 ## License
 
 Copyright © 2026 Alex Murray
