@@ -31,3 +31,43 @@ jobs:
 
       - name: Run tests
         run: emacs --batch -L . -l ert -l flatbuffers-mode.el -l test/flatbuffers-mode-test.el -f ert-run-tests-batch-and-exit
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: purcell/setup-emacs@master
+        with:
+          version: snapshot
+
+      - name: Run checkdoc
+        run: |
+          emacs --batch \
+            --eval "(require 'checkdoc)" \
+            --eval "(setq checkdoc-arguments-in-order-flag nil)" \
+            --eval "(let ((buf (find-file-noselect \"flatbuffers-mode.el\")))
+                      (with-current-buffer buf
+                        (checkdoc-current-buffer t)
+                        (let ((diag (get-buffer checkdoc-diagnostic-buffer)))
+                          (when diag
+                            (with-current-buffer diag
+                              (goto-char (point-min))
+                              (forward-line 1)
+                              (unless (eobp)
+                                (message \"%s\" (buffer-string))
+                                (kill-emacs 1)))))))"
+
+      - name: Install package-lint
+        run: |
+          emacs --batch \
+            --eval "(require 'package)" \
+            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\"))" \
+            --eval "(package-initialize)" \
+            --eval "(package-refresh-contents)" \
+            --eval "(package-install 'package-lint)"
+
+      - name: Run package-lint
+        run: emacs --batch -L . -f package-lint-batch-and-exit flatbuffers-mode.el
