@@ -300,7 +300,15 @@ Offers completion for:
 Invokes `flatbuffers-flatc-executable' on a temporary copy of the buffer
 so that unsaved edits are checked.  The temporary file is created in the
 same directory as the visited file (if any) so that relative `include'
-directives resolve correctly."
+directives resolve correctly.
+
+flatc is invoked as:
+
+  flatc --binary --file-names-only --warnings-as-errors TMPFILE
+
+`--binary' registers the binary output generator, which is required for
+flatc to perform schema validation.  `--file-names-only' suppresses all
+file output, making this a pure syntax check."
   (when (process-live-p flatbuffers--flymake-proc)
     (kill-process flatbuffers--flymake-proc))
   (let* ((flatc   (or (executable-find flatbuffers-flatc-executable)
@@ -322,8 +330,8 @@ directives resolve correctly."
              :connection-type 'pipe
              :buffer   (generate-new-buffer " *flatbuffers-flymake*")
              :command  (list flatc
-                             "--file-names-only" "--warnings-as-errors"
-                             "--json" tmpfile)
+                             "--binary" "--file-names-only" "--warnings-as-errors"
+                             tmpfile)
              :sentinel
              (lambda (proc _event)
                (when (memq (process-status proc) '(exit signal))
