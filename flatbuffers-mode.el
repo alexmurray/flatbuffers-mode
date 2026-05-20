@@ -41,12 +41,14 @@
 ;; * Imenu support for quick navigation to named tables, structs, enums,
 ;;   unions, and RPC services.
 ;;
+;; * Completion at point for keywords, built-in and user-defined type
+;;   names, and boolean constants.
+;;
 ;; * Comment syntax for both line comments (//) and block comments (/* */).
 ;;
 ;; The mode is activated automatically for files with the .fbs extension.
 
 ;; TODO:
-;; * Add `completion-at-point' support for keywords and built-in type names.
 ;; * Add Flymake backend using `flatc --file-names-only --warnings-as-errors
 ;;   --json path/to/file.fbs' to surface syntax errors in the buffer.
 
@@ -91,20 +93,36 @@
     "ulong" "ushort")
   "FlatBuffers built-in scalar and string types.")
 
+(defconst flatbuffers--identifier-re "[A-Za-z_][A-Za-z0-9_]*"
+  "Regexp matching a simple FlatBuffers identifier.")
+
+(defconst flatbuffers--qualified-identifier-re "[A-Za-z_][A-Za-z0-9_.]*"
+  "Regexp matching a qualified (namespace-prefixed) FlatBuffers identifier.")
+
+(defconst flatbuffers--block-decl-re
+  "\\(?:enum\\|rpc_service\\|struct\\|table\\|union\\)"
+  "Regexp alternation matching all block-forming declaration keywords.")
+
+(defconst flatbuffers--type-decl-re
+  "\\(?:enum\\|struct\\|table\\|union\\)"
+  "Regexp alternation matching type-defining declaration keywords.
+This is a subset of `flatbuffers--block-decl-re' that excludes `rpc_service',
+which defines a service interface but not a usable field type.")
+
 (defconst flatbuffers-font-lock-keywords
   `(;; Keywords
     (,(regexp-opt flatbuffers-keywords 'words) . font-lock-keyword-face)
     ;; Built-in types
     (,(regexp-opt flatbuffers-builtin-types 'words) . font-lock-type-face)
     ;; Declaration names: table Foo, struct Bar, enum Color, union Shape, rpc_service Greeter
-    (,(concat "\\b\\(?:enum\\|rpc_service\\|struct\\|table\\|union\\)[ \t]+"
-              "\\([A-Za-z_][A-Za-z0-9_]*\\)")
+    (,(concat "\\b" flatbuffers--block-decl-re "[ \t]+"
+              "\\(" flatbuffers--identifier-re "\\)")
      1 font-lock-type-face)
     ;; Namespace: namespace MyGame.Example
-    ("\\bnamespace[ \t]+\\([A-Za-z_][A-Za-z0-9_.]*\\)"
+    (,(concat "\\bnamespace[ \t]+\\(" flatbuffers--qualified-identifier-re "\\)")
      1 font-lock-variable-name-face)
     ;; root_type MyType
-    ("\\broot_type[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)"
+    (,(concat "\\broot_type[ \t]+\\(" flatbuffers--identifier-re "\\)")
      1 font-lock-type-face)
     ;; Boolean constants — must appear before the field-type rule so that
     ;; "true"/"false" used as metadata values (e.g. "(deprecated: true)") are
@@ -113,10 +131,13 @@
     ;; Field types after colon: "  name: Type;" or "  name: [Type];"
     ;; Anchored to indented lines so the pattern does not fire inside metadata
     ;; parentheses such as "(key: value)".
-    ("^\\s-+[A-Za-z_][A-Za-z0-9_]*\\s-*:\\s-*\\[?\\([A-Za-z_][A-Za-z0-9_.]*\\)"
+    (,(concat "^\\s-+" flatbuffers--identifier-re
+              "\\s-*:\\s-*\\[?\\(" flatbuffers--qualified-identifier-re "\\)")
      1 font-lock-type-face)
     ;; RPC method parameter and return types: "  Method(ParamType): ReturnType;"
-    ("^\\s-+[A-Za-z_][A-Za-z0-9_]*(\\([A-Za-z_][A-Za-z0-9_.]*\\)):\\s-*\\[?\\([A-Za-z_][A-Za-z0-9_.]*\\)"
+    (,(concat "^\\s-+" flatbuffers--identifier-re
+              "(\\(" flatbuffers--qualified-identifier-re "\\)):\\s-*\\[?"
+              "\\(" flatbuffers--qualified-identifier-re "\\)")
      (1 font-lock-type-face)
      (2 font-lock-type-face)))
   "Font-lock keywords for `flatbuffers-mode'.")
@@ -160,7 +181,7 @@ Only block-forming definitions (enum, rpc_service, struct, table, union)
 are considered; brace-less declarations such as namespace and root_type
 are excluded so that `end-of-defun' always finds a matching closing brace."
   (re-search-backward
-   "^\\(?:enum\\|rpc_service\\|struct\\|table\\|union\\)\\b"
+   (concat "^" flatbuffers--block-decl-re "\\b")
    nil 'move (or arg 1)))
 
 (defun flatbuffers-end-of-defun ()
@@ -171,12 +192,97 @@ are excluded so that `end-of-defun' always finds a matching closing brace."
 ;;; Imenu
 
 (defvar flatbuffers-imenu-generic-expression
-  '(("Tables"       "^table[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)"       1)
-    ("Structs"      "^struct[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)"      1)
-    ("Enums"        "^enum[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)"        1)
-    ("Unions"       "^union[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)"       1)
-    ("RPC Services" "^rpc_service[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)" 1))
+  `(("Tables"       ,(concat "^table[ \t]+"       "\\(" flatbuffers--identifier-re "\\)") 1)
+    ("Structs"      ,(concat "^struct[ \t]+"      "\\(" flatbuffers--identifier-re "\\)") 1)
+    ("Enums"        ,(concat "^enum[ \t]+"        "\\(" flatbuffers--identifier-re "\\)") 1)
+    ("Unions"       ,(concat "^union[ \t]+"       "\\(" flatbuffers--identifier-re "\\)") 1)
+    ("RPC Services" ,(concat "^rpc_service[ \t]+" "\\(" flatbuffers--identifier-re "\\)") 1))
   "Imenu expression for `flatbuffers-mode'.")
+
+;;; Completion
+
+(defun flatbuffers--collect-user-defined-types ()
+  "Return a list of type names declared in the current buffer."
+  (let (types)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward
+              (concat "^" flatbuffers--type-decl-re
+                      "[ \t]+\\(" flatbuffers--identifier-re "\\)")
+              nil t)
+        (push (match-string-no-properties 1) types)))
+    (nreverse types)))
+
+(defun flatbuffers--in-union-body-p (ppss)
+  "Return non-nil if PPSS indicates point is directly inside a union body."
+  (when-let ((open-pos (nth 1 ppss)))
+    (save-excursion
+      (goto-char open-pos)
+      (beginning-of-line)
+      (looking-at "[ \t]*union\\b"))))
+
+(defun flatbuffers-completion-at-point ()
+  "FlatBuffers `completion-at-point' function.
+
+Offers completion for:
+- Keywords at the top level (outside any braces).
+- Built-in and user-defined type names after `:' in field and enum
+  base-type declarations, including vector syntax `[Type]'.
+- User-defined type names after `root_type'.
+- Boolean constants `true' and `false' after `='.
+- User-defined type names as members inside a `union' body."
+  (let ((ppss (syntax-ppss)))
+    (unless (nth 8 ppss)                  ; skip strings and comments
+      (let* ((bounds (bounds-of-thing-at-point 'symbol))
+             (start  (or (car bounds) (point)))
+             (end    (or (cdr bounds) (point))))
+        (cond
+         ;; Type name after `:' — field type or enum base type.
+         ;; Skip back over optional `[' and whitespace to find the colon.
+         ((save-excursion
+            (goto-char start)
+            (skip-chars-backward " \t[")
+            (eq (char-before) ?:))
+          (let ((user-types (flatbuffers--collect-user-defined-types)))
+            (list start end
+                  (append flatbuffers-builtin-types user-types)
+                  :annotation-function
+                  (lambda (c)
+                    (if (member c flatbuffers-builtin-types) " builtin" " type"))
+                  :company-kind (lambda (_) 'type)
+                  :exclusive 'no)))
+         ;; User-defined type name after `root_type'.
+         ((save-excursion
+            (goto-char start)
+            (skip-chars-backward " \t")
+            (looking-back "\\broot_type" (line-beginning-position)))
+          (list start end
+                (flatbuffers--collect-user-defined-types)
+                :annotation-function (lambda (_) " type")
+                :company-kind (lambda (_) 'type)
+                :exclusive 'no))
+         ;; Boolean constants after `='.
+         ((save-excursion
+            (goto-char start)
+            (skip-chars-backward " \t")
+            (eq (char-before) ?=))
+          (list start end '("true" "false")
+                :annotation-function (lambda (_) " constant")
+                :company-kind (lambda (_) 'constant)
+                :exclusive 'no))
+         ;; Type names inside a union body (members are bare type names).
+         ((flatbuffers--in-union-body-p ppss)
+          (list start end
+                (flatbuffers--collect-user-defined-types)
+                :annotation-function (lambda (_) " type")
+                :company-kind (lambda (_) 'type)
+                :exclusive 'no))
+         ;; Keywords at the top level (no enclosing brace).
+         ((null (nth 1 ppss))
+          (list start end flatbuffers-keywords
+                :annotation-function (lambda (_) " keyword")
+                :company-kind (lambda (_) 'keyword)
+                :exclusive 'no)))))))
 
 ;;; Mode definition
 
@@ -191,7 +297,8 @@ are excluded so that `end-of-defun' always finds a matching closing brace."
   (setq-local comment-start-skip     "\\(?://+\\|/\\*+\\)\\s-*")
   (setq-local beginning-of-defun-function #'flatbuffers-beginning-of-defun)
   (setq-local end-of-defun-function       #'flatbuffers-end-of-defun)
-  (setq-local imenu-generic-expression    flatbuffers-imenu-generic-expression))
+  (setq-local imenu-generic-expression    flatbuffers-imenu-generic-expression)
+  (add-hook 'completion-at-point-functions #'flatbuffers-completion-at-point nil t))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.fbs\\'" . flatbuffers-mode))

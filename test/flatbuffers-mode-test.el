@@ -375,5 +375,91 @@
              (nth 1 (assoc "RPC Services" flatbuffers-imenu-generic-expression)) nil t))
     (should (string= (match-string 1) "Greeter"))))
 
+;;;; Completion at point
+
+(defun flatbuffers-test-completions-at (text)
+  "Return completion candidates from `flatbuffers-completion-at-point'.
+TEXT is inserted into a temp buffer with point left at end of TEXT."
+  (with-temp-buffer
+    (flatbuffers-mode)
+    (insert text)
+    (let ((result (flatbuffers-completion-at-point)))
+      (when result (nth 2 result)))))
+
+(ert-deftest flatbuffers-test-capf-keywords-at-top-level ()
+  "Keywords are offered at the top level."
+  (let ((candidates (flatbuffers-test-completions-at "tab")))
+    (should (member "table" candidates))
+    (should (member "struct" candidates))
+    (should (member "enum" candidates))))
+
+(ert-deftest flatbuffers-test-capf-all-keywords-present ()
+  "All declared keywords are present in top-level completions."
+  (let ((candidates (flatbuffers-test-completions-at "")))
+    (dolist (kw flatbuffers-keywords)
+      (should (member kw candidates)))))
+
+(ert-deftest flatbuffers-test-capf-no-keywords-inside-block ()
+  "Keywords are NOT offered inside a brace block."
+  (let ((candidates (flatbuffers-test-completions-at "table Foo {\n  tab")))
+    ;; Inside a block: either type completions or nil — never the keyword list.
+    (should-not (and candidates (member "namespace" candidates)))))
+
+(ert-deftest flatbuffers-test-capf-builtin-type-after-colon ()
+  "Built-in types are offered after `:'."
+  (let ((candidates (flatbuffers-test-completions-at "table Foo {\n  hp: sho")))
+    (should (member "short" candidates))
+    (should (member "int" candidates))
+    (should (member "float" candidates))))
+
+(ert-deftest flatbuffers-test-capf-user-type-after-colon ()
+  "User-defined types appear alongside built-in types after `:'."
+  (let ((candidates
+         (flatbuffers-test-completions-at
+          "table Monster {\n  name: string;\n}\ntable Player {\n  enemy: Mon")))
+    (should (member "Monster" candidates))
+    (should (member "int" candidates))))
+
+(ert-deftest flatbuffers-test-capf-vector-type-after-bracket ()
+  "Built-in types are offered after `:[' (vector element type)."
+  (let ((candidates (flatbuffers-test-completions-at "table Foo {\n  items: [ub")))
+    (should (member "ubyte" candidates))
+    (should (member "uint" candidates))))
+
+(ert-deftest flatbuffers-test-capf-root-type-user-defined ()
+  "Only user-defined types are offered after `root_type'."
+  (let ((candidates
+         (flatbuffers-test-completions-at
+          "table Monster {\n  hp: short;\n}\nroot_type Mon")))
+    (should (member "Monster" candidates))
+    (should-not (member "int" candidates))
+    (should-not (member "table" candidates))))
+
+(ert-deftest flatbuffers-test-capf-boolean-after-equals ()
+  "`true' and `false' are offered after `='."
+  (let ((candidates (flatbuffers-test-completions-at "table Foo {\n  active: bool = tr")))
+    (should (member "true" candidates))
+    (should (member "false" candidates))
+    (should-not (member "int" candidates))))
+
+(ert-deftest flatbuffers-test-capf-union-members ()
+  "User-defined types are offered as members inside a union body."
+  (let ((candidates
+         (flatbuffers-test-completions-at
+          "table Sword {\n  damage: short;\n}\ntable Shield {\n  armor: short;\n}\nunion Weapon {\n  Sw")))
+    (should (member "Sword" candidates))
+    (should (member "Shield" candidates))
+    (should-not (member "table" candidates))))
+
+(ert-deftest flatbuffers-test-capf-no-completion-in-line-comment ()
+  "No completions are offered inside a line comment."
+  (let ((candidates (flatbuffers-test-completions-at "// tab")))
+    (should-not candidates)))
+
+(ert-deftest flatbuffers-test-capf-no-completion-in-string ()
+  "No completions are offered inside a string literal."
+  (let ((candidates (flatbuffers-test-completions-at "include \"tab")))
+    (should-not candidates)))
+
 (provide 'flatbuffers-mode-tests)
 ;;; flatbuffers-mode-tests.el ends here
