@@ -45,6 +45,11 @@
 ;; * Completion at point for keywords, built-in and user-defined type
 ;;   names, and boolean constants.
 ;;
+;; * Xref backend for jump-to-definition (\\[xref-find-definitions]) of
+;;   user-defined types, searching the current buffer and any directly-included
+;;   files.  Pressing \\[xref-find-definitions] on an include directive opens
+;;   the referenced file.
+;;
 ;; * Flymake backend for on-the-fly syntax checking via flatc.
 ;;
 ;; * Comment syntax for both line comments (//) and block comments (/* */).
@@ -53,6 +58,8 @@
 
 
 ;;; Code:
+
+(require 'xref)
 
 (defgroup flatbuffers nil
   "Major mode for FlatBuffers schema files."
@@ -290,6 +297,99 @@ Offers completion for:
                 :company-kind (lambda (_) 'keyword)
                 :exclusive 'no)))))))
 
+;;; Xref
+
+(defun flatbuffers--buffer-dir ()
+  "Return the directory of the current buffer's file, or nil."
+  (and (buffer-file-name)
+       (file-name-directory (buffer-file-name))))
+
+(defun flatbuffers--collect-includes ()
+  "Return absolute paths for all include directives in the current buffer.
+Paths are resolved relative to the visited file's directory when available."
+  (let ((dir (flatbuffers--buffer-dir))
+        includes)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^include[ \t]+\"\\([^\"]+\\)\"" nil t)
+        (let ((file (match-string-no-properties 1)))
+          (push (if dir (expand-file-name file dir) file) includes))))
+    (nreverse includes)))
+
+(defun flatbuffers--include-at-point ()
+  "Return the absolute path of the include file on the current line, or nil.
+Returns nil if the buffer has no associated file, since the path cannot be
+resolved without a base directory."
+  (let ((dir (flatbuffers--buffer-dir)))
+    (when dir
+      (save-excursion
+        (beginning-of-line)
+        (when (looking-at "[ \t]*include[ \t]+\"\\([^\"]+\\)\"")
+          (expand-file-name (match-string-no-properties 1) dir))))))
+
+(defun flatbuffers--xref-find (identifier)
+  "Search the current buffer for the type definition of IDENTIFIER.
+Returns a plist with :pos, :line, and :col on success, nil otherwise."
+  (save-excursion
+    (goto-char (point-min))
+    (when (re-search-forward
+           (concat "^" flatbuffers--type-decl-re
+                   "[ \t]+\\(" (regexp-quote identifier) "\\)\\b")
+           nil t)
+      (let ((pos (match-beginning 1)))
+        (list :pos  pos
+              :line (line-number-at-pos pos)
+              :col  (save-excursion (goto-char pos) (current-column)))))))
+
+(defun flatbuffers-xref-backend ()
+  "Return the xref backend symbol for `flatbuffers-mode'."
+  'flatbuffers)
+
+(cl-defmethod xref-backend-identifier-at-point ((_backend (eql flatbuffers)))
+  "Return the FlatBuffers identifier at point.
+On an include directive line, returns the absolute path of the included file."
+  (or (flatbuffers--include-at-point)
+      (thing-at-point 'symbol t)))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql flatbuffers)) identifier)
+  "Return xref definitions for IDENTIFIER.
+If IDENTIFIER is an absolute path to a readable file, returns a location for
+that file directly (used when point is on an include directive).  Otherwise
+searches the current buffer and any directly-included files for a type definition."
+  (if (and (file-name-absolute-p identifier) (file-readable-p identifier))
+      (list (xref-make identifier (xref-make-file-location identifier 1 0)))
+    (let (results
+          (visited (make-hash-table :test #'equal)))
+      (when (buffer-file-name)
+        (puthash (buffer-file-name) t visited))
+      (let ((found (flatbuffers--xref-find identifier)))
+        (when found
+          (let* ((file (buffer-file-name))
+                 (loc  (if file
+                           (xref-make-file-location file
+                                                    (plist-get found :line)
+                                                    (plist-get found :col))
+                         (xref-make-buffer-location (current-buffer)
+                                                    (plist-get found :pos)))))
+            (push (xref-make identifier loc) results))))
+      (dolist (file (flatbuffers--collect-includes))
+        (when (and (not (gethash file visited)) (file-readable-p file))
+          (puthash file t visited)
+          (with-temp-buffer
+            (insert-file-contents file)
+            (let ((found (flatbuffers--xref-find identifier)))
+              (when found
+                (push (xref-make identifier
+                                 (xref-make-file-location file
+                                                          (plist-get found :line)
+                                                          (plist-get found :col)))
+                      results))))))
+      (nreverse results))))
+
+(cl-defmethod xref-backend-identifier-completion-table ((_backend (eql flatbuffers)))
+  "Return all user-defined type names for xref identifier completion."
+  (flatbuffers--collect-user-defined-types))
+
 ;;; Flymake
 
 (defvar-local flatbuffers--flymake-proc nil
@@ -322,9 +422,7 @@ file output, making this a pure syntax check."
          (tmpfile (make-temp-file (expand-file-name "flatbuffers-mode-" tmpdir)
                                   nil ".fbs")))
     (write-region nil nil tmpfile nil 'silent)
-    (save-restriction
-      (widen)
-      (setq flatbuffers--flymake-proc
+    (setq flatbuffers--flymake-proc
             (make-process
              :name     "flatbuffers-flymake"
              :noquery  t
@@ -342,35 +440,38 @@ file output, making this a pure syntax check."
                          (with-current-buffer (process-buffer proc)
                            (goto-char (point-min))
                            (cl-loop
-                             with orig-re = (concat ", originally at: "
-                                                     (regexp-quote tmpfile)
-                                                     ":\\([0-9]+\\)$")
-                             while (re-search-forward
-                                    (concat "^  " (regexp-quote tmpfile)
-                                            ":\\([0-9]+\\): [0-9]+: "
-                                            "\\(error\\|warning\\): \\(.*\\)$")
-                                    nil t)
-                             for reported-line = (string-to-number (match-string 1))
-                             for type    = (if (string= (match-string 2) "warning")
+                            with orig-re = (concat ", originally at: "
+                                                   (regexp-quote tmpfile)
+                                                   ":\\([0-9]+\\)$")
+                            while (re-search-forward
+                                   (concat "^  " (regexp-quote tmpfile)
+                                           ":\\([0-9]+\\): [0-9]+: "
+                                           "\\(error\\|warning\\): \\(.*\\)$")
+                                   nil t)
+                            for reported-line = (string-to-number (match-string 1))
+                            for type    = (if (string= (match-string 2) "warning")
                                               :warning :error)
-                             for raw-msg = (match-string 3)
-                             ;; Some errors (e.g. unresolved types) are reported at
-                             ;; the end of the file but carry an "originally at:"
-                             ;; suffix pointing at the true source location.  Use
-                             ;; that line when present and drop the suffix from the
-                             ;; displayed message.
-                             for line = (if (string-match orig-re raw-msg)
-                                            (string-to-number (match-string 1 raw-msg))
-                                          reported-line)
-                             for msg  = (replace-regexp-in-string
-                                         ", originally at:.*$" "" raw-msg)
-                             for (beg . end) = (flymake-diag-region source line)
-                             collect (flymake-make-diagnostic source beg end type msg)
-                             into diags
-                             finally (funcall report-fn diags)))
+                            for raw-msg = (match-string 3)
+                            ;; Some errors (e.g. unresolved types) are reported at
+                            ;; the end of the file but carry an "originally at:"
+                            ;; suffix pointing at the true source location.  Use
+                            ;; that line when present and drop the suffix from the
+                            ;; displayed message.
+                            for line = (if (string-match orig-re raw-msg)
+                                           (string-to-number (match-string 1 raw-msg))
+                                         reported-line)
+                            for msg  = (replace-regexp-in-string
+                                        ", originally at:.*$" "" raw-msg)
+                            for (beg . end) = (with-current-buffer source
+                                               (save-restriction
+                                                 (widen)
+                                                 (flymake-diag-region source line)))
+                            collect (flymake-make-diagnostic source beg end type msg)
+                            into diags
+                            finally (funcall report-fn diags)))
                        (flymake-log :warning "Cancelling obsolete check %s" proc))
                    (delete-file tmpfile)
-                   (kill-buffer (process-buffer proc))))))))))
+                   (kill-buffer (process-buffer proc)))))))))
 
 ;;; Mode definition
 
@@ -387,7 +488,8 @@ file output, making this a pure syntax check."
   (setq-local end-of-defun-function       #'flatbuffers-end-of-defun)
   (setq-local imenu-generic-expression    flatbuffers-imenu-generic-expression)
   (add-hook 'completion-at-point-functions #'flatbuffers-completion-at-point nil t)
-  (add-hook 'flymake-diagnostic-functions  #'flatbuffers-flymake nil t))
+  (add-hook 'flymake-diagnostic-functions  #'flatbuffers-flymake nil t)
+  (add-hook 'xref-backend-functions        #'flatbuffers-xref-backend nil t))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.fbs\\'" . flatbuffers-mode))

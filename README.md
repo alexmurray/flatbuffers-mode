@@ -9,6 +9,7 @@ Provides an enhanced editing environment for [FlatBuffers](https://flatbuffers.d
 * Automatic indentation
 * `completion-at-point` for keywords, built-in and user-defined type names, boolean constants, and union member type names
 * Flymake backend for on-the-fly syntax checking (requires `flatc` on `PATH`)
+* Xref backend for jump-to-definition (<kbd>M-.</kbd>) of user-defined types, searching the current buffer and any directly-included files; pressing <kbd>M-.</kbd> on an `include` directive opens the referenced file
 * Definition navigation via `beginning-of-defun` / `end-of-defun` (<kbd>C-M-a</kbd> / <kbd>C-M-e</kbd>)
 * [Imenu](https://www.gnu.org/software/emacs/manual/html_node/emacs/Imenu.html) support for tables, structs, enums, unions, and RPC services
 * `//` and `/* */` comment handling
@@ -76,13 +77,14 @@ The following features are absent from the historical mode and provided only by 
 |---|---|---|
 | Correct indentation | Yes | No (inherits C rules) |
 | `completion-at-point` | Yes | No |
+| Xref jump-to-definition and include-following (`M-.`) | Yes | No |
 | Flymake backend (`flatc`) | Yes | No |
 | Imenu support | Yes | No |
 | `beginning-of-defun` / `end-of-defun` | Yes | No |
 | Boolean constant highlighting | Yes | No |
 | RPC method type highlighting | Yes | No |
 | Full built-in type list (22 types) | Yes | No (4 types only) |
-| Test suite | Yes (68+ ERT tests) | No |
+| Test suite | Yes (80+ ERT tests) | No |
 | CI across multiple Emacs versions | Yes (26.1–snapshot) | No |
 
 ## License

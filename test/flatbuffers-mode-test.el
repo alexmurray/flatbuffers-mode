@@ -207,8 +207,6 @@
             "  active: bool (deprecated: true);"
             "(deprecated: \\(true\\)" 1))))
 
-
-
 (ert-deftest flatbuffers-test-fontify-namespace-value ()
   "Namespace value gets font-lock-variable-name-face."
   (should (flatbuffers-test-face-p 'font-lock-variable-name-face
@@ -519,6 +517,131 @@ TEXT is inserted into a temp buffer with point left at end of TEXT."
                     (flymake-diagnostic-beg (car diags))))))
     ;; The "originally at" suffix should be stripped from the message.
     (should-not (string-match "originally at" (flymake-diagnostic-text (car diags))))))
+
+;;;; Xref backend
+
+(ert-deftest flatbuffers-test-xref-backend-symbol ()
+  "`flatbuffers-xref-backend' returns the symbol `flatbuffers'."
+  (flatbuffers-test-with-buffer ""
+    (should (eq 'flatbuffers (flatbuffers-xref-backend)))))
+
+(ert-deftest flatbuffers-test-xref-identifier-at-point ()
+  "`xref-backend-identifier-at-point' returns the symbol at point."
+  (flatbuffers-test-with-buffer "table Monster {}"
+    (search-forward "Monster")
+    (should (string= "Monster"
+                     (xref-backend-identifier-at-point 'flatbuffers)))))
+
+(ert-deftest flatbuffers-test-xref-find-definition-in-current-buffer ()
+  "`xref-backend-definitions' finds a type defined in the current buffer."
+  (flatbuffers-test-with-buffer "table Monster {\n  hp: short;\n}\n"
+    (let ((defs (xref-backend-definitions 'flatbuffers "Monster")))
+      (should (= 1 (length defs)))
+      (should (string= "Monster" (xref-item-summary (car defs)))))))
+
+(ert-deftest flatbuffers-test-xref-no-definition-for-unknown ()
+  "`xref-backend-definitions' returns nil for an undefined identifier."
+  (flatbuffers-test-with-buffer "table Monster {}\n"
+    (should (null (xref-backend-definitions 'flatbuffers "Unknown")))))
+
+(ert-deftest flatbuffers-test-xref-completion-table ()
+  "`xref-backend-identifier-completion-table' returns user-defined type names."
+  (flatbuffers-test-with-buffer "table Monster {}\nstruct Vec3 {}\n"
+    (let ((table (xref-backend-identifier-completion-table 'flatbuffers)))
+      (should (member "Monster" table))
+      (should (member "Vec3" table)))))
+
+(ert-deftest flatbuffers-test-xref-find-definition-in-included-file ()
+  "`xref-backend-definitions' finds types defined in directly-included files."
+  (let* ((dir  (make-temp-file "flatbuffers-test-" t))
+         (inc  (expand-file-name "types.fbs" dir))
+         (main (expand-file-name "main.fbs" dir))
+         main-buf)
+    (unwind-protect
+        (progn
+          (write-region "table Vec3 {\n  x: float;\n}\n" nil inc)
+          (write-region
+           "include \"types.fbs\";\ntable Monster {\n  pos: Vec3;\n}\n"
+           nil main)
+          (setq main-buf (find-file-noselect main))
+          (with-current-buffer main-buf
+            (flatbuffers-mode)
+            (let ((defs (xref-backend-definitions 'flatbuffers "Vec3")))
+              (should (= 1 (length defs)))
+              (should (string= "Vec3" (xref-item-summary (car defs)))))))
+      (when (buffer-live-p main-buf) (kill-buffer main-buf))
+      (delete-directory dir t))))
+
+;;;; Include handling
+
+(ert-deftest flatbuffers-test-collect-includes-empty ()
+  "`flatbuffers--collect-includes' returns nil when there are no includes."
+  (flatbuffers-test-with-buffer "table Foo {}\n"
+    (should (null (flatbuffers--collect-includes)))))
+
+(ert-deftest flatbuffers-test-collect-includes-single ()
+  "`flatbuffers--collect-includes' collects a single include path."
+  (flatbuffers-test-with-buffer "include \"other.fbs\";\ntable Foo {}\n"
+    (should (equal (flatbuffers--collect-includes) '("other.fbs")))))
+
+(ert-deftest flatbuffers-test-collect-includes-multiple ()
+  "`flatbuffers--collect-includes' collects multiple include paths in order."
+  (flatbuffers-test-with-buffer "include \"a.fbs\";\ninclude \"b.fbs\";\n"
+    (should (equal (flatbuffers--collect-includes) '("a.fbs" "b.fbs")))))
+
+(ert-deftest flatbuffers-test-include-at-point-on-include-line ()
+  "`flatbuffers--include-at-point' returns an absolute path on an include line."
+  (let* ((dir    (make-temp-file "flatbuffers-test-" t))
+         (target (expand-file-name "other.fbs" dir))
+         (source (expand-file-name "source.fbs" dir))
+         source-buf)
+    (unwind-protect
+        (progn
+          (write-region "" nil target)
+          (write-region "include \"other.fbs\";\n" nil source)
+          (setq source-buf (find-file-noselect source))
+          (with-current-buffer source-buf
+            (flatbuffers-mode)
+            (goto-char (point-min))
+            (should (string= target (flatbuffers--include-at-point)))))
+      (when (buffer-live-p source-buf) (kill-buffer source-buf))
+      (delete-directory dir t))))
+
+(ert-deftest flatbuffers-test-include-at-point-not-on-include ()
+  "`flatbuffers--include-at-point' returns nil when not on an include line."
+  (flatbuffers-test-with-buffer "table Foo {}\n"
+    (should (null (flatbuffers--include-at-point)))))
+
+(ert-deftest flatbuffers-test-xref-identifier-at-point-on-include-line ()
+  "`xref-backend-identifier-at-point' returns the include path on an include line."
+  (let* ((dir  (make-temp-file "flatbuffers-test-" t))
+         (inc  (expand-file-name "types.fbs" dir))
+         (main (expand-file-name "main.fbs" dir))
+         main-buf)
+    (unwind-protect
+        (progn
+          (write-region "" nil inc)
+          (write-region "include \"types.fbs\";\n" nil main)
+          (setq main-buf (find-file-noselect main))
+          (with-current-buffer main-buf
+            (flatbuffers-mode)
+            (goto-char (point-min))
+            (should (string= inc (xref-backend-identifier-at-point 'flatbuffers)))))
+      (when (buffer-live-p main-buf) (kill-buffer main-buf))
+      (delete-directory dir t))))
+
+(ert-deftest flatbuffers-test-xref-definitions-follows-include ()
+  "`xref-backend-definitions' returns a file location for an absolute include path."
+  (let* ((dir (make-temp-file "flatbuffers-test-" t))
+         (inc (expand-file-name "types.fbs" dir)))
+    (unwind-protect
+        (progn
+          (write-region "table Vec3 {}\n" nil inc)
+          (flatbuffers-test-with-buffer ""
+            (let ((defs (xref-backend-definitions 'flatbuffers inc)))
+              (should (= 1 (length defs)))
+              (should (string= inc (xref-item-summary (car defs)))))))
+      (delete-directory dir t))))
 
 (provide 'flatbuffers-mode-tests)
 ;;; flatbuffers-mode-tests.el ends here
