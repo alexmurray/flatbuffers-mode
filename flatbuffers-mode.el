@@ -5,7 +5,7 @@
 ;; Author: Alex Murray <murray.alex@gmail.com>
 ;; Maintainer: Alex Murray <murray.alex@gmail.com>
 ;; Assisted-by: Claude:claude-opus-4-7
-;; Version: 0.1
+;; Version: 0.2
 ;; Keywords: languages
 ;; URL: https://github.com/alexmurray/flatbuffers-mode
 ;; Package-Requires: ((emacs "26.1"))
