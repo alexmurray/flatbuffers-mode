@@ -56,6 +56,10 @@
 ;;   files.  Pressing \\[xref-find-definitions] on an include directive opens
 ;;   the referenced file.
 ;;
+;; * Eldoc integration: hovering over a user-defined type name shows its
+;;   declaration header (e.g. `table Foo' or `enum Color : byte') in the
+;;   minibuffer.
+;;
 ;; * Flymake backend for on-the-fly syntax checking via flatc.
 ;;
 ;; * Comment syntax for both line comments (//) and block comments (/* */).
@@ -501,6 +505,27 @@ searches the current buffer and any directly-included files for a type definitio
   "Return all user-defined type names for xref identifier completion."
   (flatbuffers--collect-user-defined-types))
 
+;;; Eldoc
+
+(defun flatbuffers--type-declaration-string (identifier)
+  "Return the declaration header for IDENTIFIER, or nil if not found.
+Searches the current buffer and directly-included files.
+The returned string looks like \"table Foo\" or \"enum Color : byte\"."
+  (let ((raw (car (flatbuffers--collect-with-includes
+                   (concat "^\\(" flatbuffers--type-decl-re
+                           "[ \t]+" (regexp-quote identifier)
+                           "\\b[^{\n]*\\)")))))
+    (when raw (replace-regexp-in-string "[ \t]+$" "" raw))))
+
+(defun flatbuffers-eldoc-function (callback &rest _)
+  "Eldoc documentation function for `flatbuffers-mode'.
+Calls CALLBACK with the declaration header of the user-defined type at
+point, if any — for example \"table Monster\" or \"enum Color : byte\"."
+  (let* ((sym (thing-at-point 'symbol t))
+         (doc (and sym (flatbuffers--type-declaration-string sym))))
+    (when doc
+      (funcall callback doc))))
+
 ;;; Flymake
 
 (defvar-local flatbuffers--flymake-proc nil
@@ -600,7 +625,18 @@ file output, making this a pure syntax check."
   (setq-local imenu-generic-expression    flatbuffers-imenu-generic-expression)
   (add-hook 'completion-at-point-functions #'flatbuffers-completion-at-point nil t)
   (add-hook 'flymake-diagnostic-functions  #'flatbuffers-flymake nil t)
-  (add-hook 'xref-backend-functions        #'flatbuffers-xref-backend nil t))
+  (add-hook 'xref-backend-functions        #'flatbuffers-xref-backend nil t)
+  (if (boundp 'eldoc-documentation-functions)
+      (add-hook 'eldoc-documentation-functions #'flatbuffers-eldoc-function nil t)
+    (with-no-warnings
+      ;; `eldoc-documentation-function' is obsolete since Emacs 28 but
+      ;; required for Emacs 26 and 27 compatibility.
+      (setq-local eldoc-documentation-function
+                  (lambda ()
+                    (let (result)
+                      (flatbuffers-eldoc-function
+                       (lambda (s &rest _) (setq result s)))
+                      result))))))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.fbs\\'" . flatbuffers-mode))

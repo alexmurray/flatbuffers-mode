@@ -861,5 +861,78 @@ TEXT is inserted into a temp buffer with point left at end of TEXT."
               (should (string= inc (xref-item-summary (car defs)))))))
       (delete-directory dir t))))
 
+;;;; Eldoc
+
+(defun flatbuffers-test-eldoc-at (text target)
+  "Return the eldoc doc string with point at the last occurrence of TARGET in TEXT."
+  (with-temp-buffer
+    (flatbuffers-mode)
+    (insert text)
+    (goto-char (point-max))
+    (search-backward target)
+    (let (result)
+      (flatbuffers-eldoc-function (lambda (s &rest _) (setq result s)))
+      result)))
+
+(ert-deftest flatbuffers-test-eldoc-table ()
+  "Eldoc returns the table declaration for a type name at point."
+  (should (equal "table Monster"
+                 (flatbuffers-test-eldoc-at
+                  "table Monster {\n  hp: short;\n}\ntable Player {\n  enemy: Monster;\n}"
+                  "Monster"))))
+
+(ert-deftest flatbuffers-test-eldoc-enum ()
+  "Eldoc returns the full enum header including base type."
+  (should (equal "enum Color : byte"
+                 (flatbuffers-test-eldoc-at
+                  "enum Color : byte {\n  Red = 0\n}\ntable Foo {\n  c: Color;\n}"
+                  "Color"))))
+
+(ert-deftest flatbuffers-test-eldoc-struct ()
+  "Eldoc returns the struct declaration for a struct type at point."
+  (should (equal "struct Vec3"
+                 (flatbuffers-test-eldoc-at
+                  "struct Vec3 {\n  x: float;\n}\ntable Foo {\n  pos: Vec3;\n}"
+                  "Vec3"))))
+
+(ert-deftest flatbuffers-test-eldoc-union ()
+  "Eldoc returns the union declaration for a union type at point."
+  (should (equal "union Equipment"
+                 (flatbuffers-test-eldoc-at
+                  "union Equipment {\n  Weapon\n}\ntable Hero {\n  equip: Equipment;\n}"
+                  "Equipment"))))
+
+(ert-deftest flatbuffers-test-eldoc-nil-for-unknown-identifier ()
+  "Eldoc returns nil when the symbol at point has no type declaration."
+  (should-not
+   (flatbuffers-test-eldoc-at "table Foo {\n  x: UnknownType;\n}" "UnknownType")))
+
+(ert-deftest flatbuffers-test-eldoc-nil-for-builtin-keyword ()
+  "Eldoc returns nil for a built-in keyword — keywords are not type declarations."
+  (should-not (flatbuffers-test-eldoc-at "table Foo {}" "table")))
+
+(ert-deftest flatbuffers-test-eldoc-from-included-file ()
+  "Eldoc finds the declaration of a type defined in a directly-included file."
+  (let* ((dir  (make-temp-file "flatbuffers-test-" t))
+         (inc  (expand-file-name "types.fbs" dir))
+         (main (expand-file-name "main.fbs" dir))
+         main-buf)
+    (unwind-protect
+        (progn
+          (write-region "table Vec3 {\n  x: float;\n}\n" nil inc)
+          (write-region
+           "include \"types.fbs\";\ntable Monster {\n  pos: Vec3;\n}\n"
+           nil main)
+          (setq main-buf (find-file-noselect main))
+          (with-current-buffer main-buf
+            (flatbuffers-mode)
+            (goto-char (point-max))
+            (search-backward "Vec3")
+            (let (result)
+              (flatbuffers-eldoc-function (lambda (s &rest _) (setq result s)))
+              (should (equal "table Vec3" result)))))
+      (when (buffer-live-p main-buf) (kill-buffer main-buf))
+      (delete-directory dir t))))
+
 (provide 'flatbuffers-mode-tests)
 ;;; flatbuffers-mode-tests.el ends here
