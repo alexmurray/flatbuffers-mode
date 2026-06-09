@@ -599,6 +599,74 @@ TEXT is inserted into a temp buffer with point left at end of TEXT."
                   (flatbuffers-completion-at-point))))
     (should-not (and result (member "int" (nth 2 result))))))
 
+(ert-deftest flatbuffers-test-capf-types-from-included-files ()
+  "Types declared in directly-included files appear in field-type completions."
+  (let* ((dir  (make-temp-file "flatbuffers-test-" t))
+         (inc  (expand-file-name "types.fbs" dir))
+         (main (expand-file-name "main.fbs" dir))
+         main-buf)
+    (unwind-protect
+        (progn
+          (write-region "table Vec3 {\n  x: float;\n}\n" nil inc)
+          (write-region
+           "include \"types.fbs\";\ntable Monster {\n  pos: Vec" nil main)
+          (setq main-buf (find-file-noselect main))
+          (with-current-buffer main-buf
+            (flatbuffers-mode)
+            (goto-char (point-max))
+            (let* ((result (flatbuffers-completion-at-point))
+                   (candidates (when result (nth 2 result))))
+              (should (member "Vec3" candidates))
+              (should (member "float" candidates)))))   ; built-ins still present
+      (when (buffer-live-p main-buf) (kill-buffer main-buf))
+      (delete-directory dir t))))
+
+(ert-deftest flatbuffers-test-capf-types-from-multiple-included-files ()
+  "Types from two different included files both appear in completions."
+  (let* ((dir   (make-temp-file "flatbuffers-test-" t))
+         (inc-a (expand-file-name "a.fbs" dir))
+         (inc-b (expand-file-name "b.fbs" dir))
+         (main  (expand-file-name "main.fbs" dir))
+         main-buf)
+    (unwind-protect
+        (progn
+          (write-region "table TypeA {}\n" nil inc-a)
+          (write-region "table TypeB {}\n" nil inc-b)
+          (write-region
+           "include \"a.fbs\";\ninclude \"b.fbs\";\ntable Foo {\n  x: Type" nil main)
+          (setq main-buf (find-file-noselect main))
+          (with-current-buffer main-buf
+            (flatbuffers-mode)
+            (goto-char (point-max))
+            (let* ((result (flatbuffers-completion-at-point))
+                   (candidates (when result (nth 2 result))))
+              (should (member "TypeA" candidates))
+              (should (member "TypeB" candidates)))))
+      (when (buffer-live-p main-buf) (kill-buffer main-buf))
+      (delete-directory dir t))))
+
+(ert-deftest flatbuffers-test-capf-user-defined-attributes-from-included-files ()
+  "User-defined attributes declared in included files appear in metadata completions."
+  (let* ((dir  (make-temp-file "flatbuffers-test-" t))
+         (inc  (expand-file-name "attrs.fbs" dir))
+         (main (expand-file-name "main.fbs" dir))
+         main-buf)
+    (unwind-protect
+        (progn
+          (write-region "attribute \"priority\";\n" nil inc)
+          (write-region
+           "include \"attrs.fbs\";\ntable Foo {\n  hp: short (pri" nil main)
+          (setq main-buf (find-file-noselect main))
+          (with-current-buffer main-buf
+            (flatbuffers-mode)
+            (goto-char (point-max))
+            (let* ((result (flatbuffers-completion-at-point))
+                   (candidates (when result (nth 2 result))))
+              (should (member "priority" candidates))
+              (should (member "deprecated" candidates)))))  ; built-ins still present
+      (when (buffer-live-p main-buf) (kill-buffer main-buf))
+      (delete-directory dir t))))
+
 (ert-deftest flatbuffers-test-capf-no-completion-in-line-comment ()
   "No completions are offered inside a line comment."
   (let ((candidates (flatbuffers-test-completions-at "// tab")))

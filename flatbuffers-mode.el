@@ -243,14 +243,9 @@ are excluded so that `end-of-defun' always finds a matching closing brace."
 ;;; Completion
 
 (defun flatbuffers--collect-user-defined-attributes ()
-  "Return a list of user-defined attribute names declared in the current buffer.
+  "Return user-defined attribute names from the current buffer and its direct includes.
 Scans for `attribute \"name\";' declarations."
-  (let (attrs)
-    (save-excursion
-      (goto-char (point-min))
-      (while (re-search-forward "^attribute[ \t]+\"\\([^\"]+\\)\"" nil t)
-        (push (match-string-no-properties 1) attrs)))
-    (nreverse attrs)))
+  (flatbuffers--collect-with-includes "^attribute[ \t]+\"\\([^\"]+\\)\""))
 
 (defun flatbuffers--in-metadata-p (ppss)
   "Return non-nil if PPSS indicates point is inside a metadata attribute list.
@@ -277,24 +272,36 @@ Returns nil if no such attribute name is found."
         (let ((name (buffer-substring-no-properties (point) end)))
           (unless (string= name "") name))))))
 
-(defun flatbuffers--collect-declarations (keyword-re)
-  "Return names of all top-level declarations whose keyword matches KEYWORD-RE."
-  (let (names)
+(defun flatbuffers--collect-with-includes (regexp)
+  "Return match group 1 for all REGEXP hits in the current buffer and direct includes.
+Each directly-included file is visited at most once."
+  (let (results
+        (visited (make-hash-table :test #'equal)))
     (save-excursion
       (goto-char (point-min))
-      (while (re-search-forward
-              (concat "^" keyword-re "[ \t]+\\(" flatbuffers--identifier-re "\\)")
-              nil t)
-        (push (match-string-no-properties 1) names)))
-    (nreverse names)))
+      (while (re-search-forward regexp nil t)
+        (push (match-string-no-properties 1) results)))
+    (when (buffer-file-name)
+      (puthash (buffer-file-name) t visited))
+    (dolist (file (flatbuffers--collect-includes))
+      (when (and (not (gethash file visited)) (file-readable-p file))
+        (puthash file t visited)
+        (with-temp-buffer
+          (insert-file-contents file)
+          (goto-char (point-min))
+          (while (re-search-forward regexp nil t)
+            (push (match-string-no-properties 1) results)))))
+    (nreverse results)))
 
 (defun flatbuffers--collect-user-defined-types ()
-  "Return a list of type names declared in the current buffer."
-  (flatbuffers--collect-declarations flatbuffers--type-decl-re))
+  "Return type names from the current buffer and its direct includes."
+  (flatbuffers--collect-with-includes
+   (concat "^" flatbuffers--type-decl-re "[ \t]+\\(" flatbuffers--identifier-re "\\)")))
 
 (defun flatbuffers--collect-tables ()
-  "Return a list of table names declared in the current buffer."
-  (flatbuffers--collect-declarations "table"))
+  "Return table names from the current buffer and its direct includes."
+  (flatbuffers--collect-with-includes
+   (concat "^table[ \t]+\\(" flatbuffers--identifier-re "\\)")))
 
 (defun flatbuffers--in-union-body-p (ppss)
   "Return non-nil if PPSS indicates point is directly inside a union body."
