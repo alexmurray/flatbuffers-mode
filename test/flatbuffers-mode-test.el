@@ -217,6 +217,51 @@
   (should (flatbuffers-test-face-p 'font-lock-type-face
            (flatbuffers-test-face-at-match "root_type Monster;" "root_type \\(Monster\\)" 1))))
 
+;;;; Font-lock — metadata attributes
+
+(ert-deftest flatbuffers-test-fontify-builtin-attribute-deprecated ()
+  "Built-in attribute `deprecated' inside metadata gets font-lock-builtin-face."
+  (should (flatbuffers-test-face-p 'font-lock-builtin-face
+           (flatbuffers-test-face-at-match
+            "  active: bool (deprecated);"
+            "(\\(deprecated\\))" 1))))
+
+(ert-deftest flatbuffers-test-fontify-builtin-attribute-required ()
+  "Built-in attribute `required' inside metadata gets font-lock-builtin-face."
+  (should (flatbuffers-test-face-p 'font-lock-builtin-face
+           (flatbuffers-test-face-at-match
+            "  name: string (required);"
+            "(\\(required\\))" 1))))
+
+(ert-deftest flatbuffers-test-fontify-builtin-attribute-with-value ()
+  "Built-in attribute name before `:' inside metadata gets font-lock-builtin-face."
+  (should (flatbuffers-test-face-p 'font-lock-builtin-face
+           (flatbuffers-test-face-at-match
+            "  id: int (id: 3);"
+            "(\\(id\\):" 1))))
+
+(ert-deftest flatbuffers-test-fontify-attribute-not-in-rpc-params ()
+  "Attribute names inside RPC method parameter lists are not highlighted as builtins."
+  (with-temp-buffer
+    (flatbuffers-mode)
+    (insert "rpc_service Svc {\n  Method(key): Result;\n}\n")
+    (font-lock-ensure)
+    (goto-char (point-min))
+    (should (re-search-forward "Method(\\(key\\))" nil t))
+    (should-not (flatbuffers-test-face-p 'font-lock-builtin-face
+                 (get-text-property (match-beginning 1) 'face)))))
+
+(ert-deftest flatbuffers-test-fontify-user-defined-attribute-not-highlighted ()
+  "User-defined attributes in metadata are not highlighted (only built-ins are)."
+  (with-temp-buffer
+    (flatbuffers-mode)
+    (insert "attribute \"priority\";\ntable Foo {\n  hp: short (priority: 1);\n}")
+    (font-lock-ensure)
+    (goto-char (point-min))
+    (should (re-search-forward "(\\(priority\\):" nil t))
+    (should-not (flatbuffers-test-face-p 'font-lock-builtin-face
+                 (get-text-property (match-beginning 1) 'face)))))
+
 ;;;; Font-lock — constants
 
 (ert-deftest flatbuffers-test-fontify-constant-true ()
@@ -448,6 +493,111 @@ TEXT is inserted into a temp buffer with point left at end of TEXT."
     (should (member "Sword" candidates))
     (should (member "Shield" candidates))
     (should-not (member "table" candidates))))
+
+(ert-deftest flatbuffers-test-capf-attribute-names-inside-metadata ()
+  "Attribute names are offered inside a metadata attribute list."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "table Foo {\n  hp: short (dep")))
+    (should (member "deprecated" candidates))
+    (should (member "required" candidates))
+    (should-not (member "int" candidates))
+    (should-not (member "table" candidates))))
+
+(ert-deftest flatbuffers-test-capf-all-attributes-present ()
+  "All declared attributes are present in metadata completions."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "table Foo {\n  hp: short (")))
+    (dolist (attr flatbuffers-attributes)
+      (should (member attr candidates)))))
+
+(ert-deftest flatbuffers-test-capf-attribute-after-comma-in-metadata ()
+  "Attribute names are offered after a comma in a multi-attribute metadata list."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "table Foo {\n  hp: short (deprecated, ke")))
+    (should (member "key" candidates))
+    (should (member "required" candidates))))
+
+(ert-deftest flatbuffers-test-capf-attribute-on-type-declaration ()
+  "Attribute names are offered in metadata on a table declaration line."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "table Foo (orig")))
+    (should (member "original_order" candidates))
+    (should-not (member "int" candidates))))
+
+(ert-deftest flatbuffers-test-capf-user-defined-attribute-in-metadata ()
+  "User-defined attributes declared with `attribute' appear in metadata completion."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "attribute \"priority\";\ntable Foo {\n  hp: short (pri")))
+    (should (member "priority" candidates))
+    (should (member "deprecated" candidates))))
+
+(ert-deftest flatbuffers-test-capf-multiple-user-defined-attributes ()
+  "All user-defined attributes from multiple `attribute' declarations are offered."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "attribute \"priority\";\nattribute \"version\";\ntable Foo {\n  hp: short (")))
+    (should (member "priority" candidates))
+    (should (member "version" candidates))
+    (should (member "deprecated" candidates))))
+
+(ert-deftest flatbuffers-test-capf-no-undeclared-user-attributes ()
+  "Attribute names not declared with `attribute' do not appear from thin air."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "table Foo {\n  hp: short (")))
+    ;; Only built-in attributes should be present; no invented names.
+    (should-not (member "priority" candidates))
+    (should-not (member "version" candidates))))
+
+(ert-deftest flatbuffers-test-capf-no-attributes-in-rpc-params ()
+  "Attribute names are NOT offered inside an RPC method parameter list."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "rpc_service Svc {\n  Method(Mon")))
+    (should-not (and candidates (member "deprecated" candidates)))))
+
+(ert-deftest flatbuffers-test-capf-hash-values-after-hash-colon ()
+  "Hash algorithm names are offered after `hash:'."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "table Foo {\n  id: int (hash: ")))
+    (should (member "\"fnv1_32\"" candidates))
+    (should (member "\"fnv1_64\"" candidates))
+    (should (member "\"fnv1a_32\"" candidates))
+    (should (member "\"fnv1a_64\"" candidates))))
+
+(ert-deftest flatbuffers-test-capf-no-values-for-integer-attributes ()
+  "No completion candidates are returned after `id:' (integer value, no known set)."
+  (let ((result (with-temp-buffer
+                  (flatbuffers-mode)
+                  (insert "table Foo {\n  hp: short (id: ")
+                  (flatbuffers-completion-at-point))))
+    (should-not result)))
+
+(ert-deftest flatbuffers-test-capf-nested-flatbuffer-values ()
+  "Quoted table names are offered after `nested_flatbuffer:'."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "table Monster {\n  hp: short;\n}\ntable Foo {\n  data: [ubyte] (nested_flatbuffer: ")))
+    (should (member "\"Monster\"" candidates))
+    (should-not (member "Monster" candidates))))
+
+(ert-deftest flatbuffers-test-capf-nested-flatbuffer-excludes-enums ()
+  "Enum names are NOT offered after `nested_flatbuffer:' — only table names are valid."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "enum Color : byte { Red = 0 }\ntable Foo {\n  data: [ubyte] (nested_flatbuffer: ")))
+    (should-not (member "\"Color\"" candidates))
+    (should-not (member "Color" candidates))))
+
+(ert-deftest flatbuffers-test-capf-nested-flatbuffer-excludes-structs ()
+  "Struct names are NOT offered after `nested_flatbuffer:' — only table names are valid."
+  (let ((candidates (flatbuffers-test-completions-at
+                     "struct Vec3 { x: float; }\ntable Foo {\n  data: [ubyte] (nested_flatbuffer: ")))
+    (should-not (member "\"Vec3\"" candidates))
+    (should-not (member "Vec3" candidates))))
+
+(ert-deftest flatbuffers-test-capf-no-types-after-id-colon ()
+  "Built-in types are NOT offered after `id:' inside metadata."
+  (let ((result (with-temp-buffer
+                  (flatbuffers-mode)
+                  (insert "table Foo {\n  hp: short (id: ")
+                  (flatbuffers-completion-at-point))))
+    (should-not (and result (member "int" (nth 2 result))))))
 
 (ert-deftest flatbuffers-test-capf-no-completion-in-line-comment ()
   "No completions are offered inside a line comment."

@@ -42,8 +42,14 @@
 ;; * Imenu support for quick navigation to named tables, structs, enums,
 ;;   unions, and RPC services.
 ;;
+;; * Syntax highlighting for built-in metadata attribute names such as
+;;   `deprecated' and `required' when they appear inside attribute lists
+;;   (i.e., after `(' or `,' in a metadata context).
+;;
 ;; * Completion at point for keywords, built-in and user-defined type
-;;   names, and boolean constants.
+;;   names, boolean constants, and metadata attributes (including
+;;   hash algorithm values for the `hash' attribute and table names
+;;   for the `nested_flatbuffer' attribute).
 ;;
 ;; * Xref backend for jump-to-definition (\\[xref-find-definitions]) of
 ;;   user-defined types, searching the current buffer and any directly-included
@@ -105,6 +111,19 @@
     "ulong" "ushort")
   "FlatBuffers built-in scalar and string types.")
 
+(defconst flatbuffers-attributes
+  '("bit_flags" "deprecated" "flexbuffer" "force_align" "hash"
+    "id" "key" "nested_flatbuffer" "original_order" "required")
+  "FlatBuffers built-in field and type attributes.")
+
+(defconst flatbuffers--attributes-re
+  (regexp-opt flatbuffers-attributes 'words)
+  "Regexp matching FlatBuffers built-in attribute names.")
+
+(defconst flatbuffers--hash-algorithms
+  '("\"fnv1_32\"" "\"fnv1_64\"" "\"fnv1a_32\"" "\"fnv1a_64\"")
+  "Quoted hash algorithm strings for the FlatBuffers `hash' attribute.")
+
 (defconst flatbuffers--identifier-re "[A-Za-z_][A-Za-z0-9_]*"
   "Regexp matching a simple FlatBuffers identifier.")
 
@@ -136,6 +155,16 @@ which defines a service interface but not a usable field type.")
     ;; root_type MyType
     (,(concat "\\broot_type[ \t]+\\(" flatbuffers--identifier-re "\\)")
      1 font-lock-type-face)
+    ;; Built-in attribute names in metadata lists: "(deprecated, id: 3)".
+    ;; Matches after a non-word `(' (excluding RPC params like Method(Foo) where
+    ;; `(' immediately follows an identifier) or after `,' (which covers
+    ;; multi-attribute lists).  The `,` branch also fires inside enum bodies,
+    ;; so enum members whose names happen to match a built-in attribute (e.g.
+    ;; `deprecated = 0') will be incorrectly highlighted.  Fixing this without
+    ;; `syntax-ppss' is not possible with a pure regexp.
+    (,(concat "\\(?:\\(?:^\\|[^A-Za-z_0-9]\\)(\\|,\\)[ \t]*"
+              "\\(" flatbuffers--attributes-re "\\)")
+     1 font-lock-builtin-face)
     ;; Boolean constants — must appear before the field-type rule so that
     ;; "true"/"false" used as metadata values (e.g. "(deprecated: true)") are
     ;; not mis-highlighted as types by the rule below.
@@ -213,17 +242,59 @@ are excluded so that `end-of-defun' always finds a matching closing brace."
 
 ;;; Completion
 
-(defun flatbuffers--collect-user-defined-types ()
-  "Return a list of type names declared in the current buffer."
-  (let (types)
+(defun flatbuffers--collect-user-defined-attributes ()
+  "Return a list of user-defined attribute names declared in the current buffer.
+Scans for `attribute \"name\";' declarations."
+  (let (attrs)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^attribute[ \t]+\"\\([^\"]+\\)\"" nil t)
+        (push (match-string-no-properties 1) attrs)))
+    (nreverse attrs)))
+
+(defun flatbuffers--in-metadata-p (ppss)
+  "Return non-nil if PPSS indicates point is inside a metadata attribute list.
+Attribute lists such as \"(deprecated, id: 3)\" are distinguished from RPC
+method parameter lists such as \"Method(ParamType)\" by checking that the
+opening parenthesis is not immediately preceded by a word-constituent character."
+  (let ((open-pos (nth 1 ppss)))
+    (when (and open-pos (eq (char-after open-pos) ?\())
+      (save-excursion
+        (goto-char open-pos)
+        (let ((c (char-before)))
+          (not (and c (eq (char-syntax c) ?w))))))))
+
+(defun flatbuffers--attribute-before-colon ()
+  "Return the attribute name immediately before the `:' that precedes point.
+Returns nil if no such attribute name is found."
+  (save-excursion
+    (skip-chars-backward " \t")
+    (when (eq (char-before) ?:)
+      (backward-char)
+      (skip-chars-backward " \t")
+      (let ((end (point)))
+        (skip-chars-backward "A-Za-z_0-9")
+        (let ((name (buffer-substring-no-properties (point) end)))
+          (unless (string= name "") name))))))
+
+(defun flatbuffers--collect-declarations (keyword-re)
+  "Return names of all top-level declarations whose keyword matches KEYWORD-RE."
+  (let (names)
     (save-excursion
       (goto-char (point-min))
       (while (re-search-forward
-              (concat "^" flatbuffers--type-decl-re
-                      "[ \t]+\\(" flatbuffers--identifier-re "\\)")
+              (concat "^" keyword-re "[ \t]+\\(" flatbuffers--identifier-re "\\)")
               nil t)
-        (push (match-string-no-properties 1) types)))
-    (nreverse types)))
+        (push (match-string-no-properties 1) names)))
+    (nreverse names)))
+
+(defun flatbuffers--collect-user-defined-types ()
+  "Return a list of type names declared in the current buffer."
+  (flatbuffers--collect-declarations flatbuffers--type-decl-re))
+
+(defun flatbuffers--collect-tables ()
+  "Return a list of table names declared in the current buffer."
+  (flatbuffers--collect-declarations "table"))
 
 (defun flatbuffers--in-union-body-p (ppss)
   "Return non-nil if PPSS indicates point is directly inside a union body."
@@ -238,18 +309,51 @@ are excluded so that `end-of-defun' always finds a matching closing brace."
   "FlatBuffers `completion-at-point' function.
 
 Offers completion for:
-- Keywords at the top level (outside any braces).
+- Built-in and user-defined metadata attribute names inside attribute
+  lists (the parenthesised annotations following field or type
+  declarations, e.g. `(deprecated, id: 3)').
+- Values for specific attributes: hash algorithm strings after `hash:'
+  and quoted table names after `nested_flatbuffer:'.
 - Built-in and user-defined type names after `:' in field and enum
   base-type declarations, including vector syntax `[Type]'.
 - User-defined type names after `root_type'.
 - Boolean constants `true' and `false' after `='.
-- User-defined type names as members inside a `union' body."
+- User-defined type names as members inside a `union' body.
+- Keywords at the top level (outside any braces)."
   (let ((ppss (syntax-ppss)))
     (unless (nth 8 ppss)                  ; skip strings and comments
       (let* ((bounds (bounds-of-thing-at-point 'symbol))
              (start  (or (car bounds) (point)))
              (end    (or (cdr bounds) (point))))
         (cond
+         ;; Inside a metadata attribute list — takes priority over the
+         ;; type-after-`:' case, which would otherwise fire on e.g. "id: ".
+         ((flatbuffers--in-metadata-p ppss)
+          (if (save-excursion
+                (goto-char start)
+                (skip-chars-backward " \t")
+                (eq (char-before) ?:))
+              ;; After `:' — offer values for attributes with a known value set.
+              (let* ((attr (flatbuffers--attribute-before-colon))
+                     (candidates
+                      (cond
+                       ((equal attr "hash") flatbuffers--hash-algorithms)
+                       ((equal attr "nested_flatbuffer")
+                        (mapcar (lambda (name) (concat "\"" name "\""))
+                                (flatbuffers--collect-tables)))
+                       (t nil))))
+                (when candidates
+                  (list start end candidates
+                        :annotation-function (lambda (_) " value")
+                        :company-kind (lambda (_) 'value)
+                        :exclusive 'no)))
+            ;; Not after `:' — offer built-in and user-defined attribute names.
+            (let ((user-attrs (flatbuffers--collect-user-defined-attributes)))
+              (list start end (append flatbuffers-attributes user-attrs)
+                    :annotation-function
+                    (lambda (c) (if (member c user-attrs) " user-attr" " attribute"))
+                    :company-kind (lambda (_) 'property)
+                    :exclusive 'no))))
          ;; Type name after `:' — field type or enum base type.
          ;; Skip back over optional `[' and whitespace to find the colon.
          ((save-excursion
@@ -423,55 +527,55 @@ file output, making this a pure syntax check."
                                   nil ".fbs")))
     (write-region nil nil tmpfile nil 'silent)
     (setq flatbuffers--flymake-proc
-            (make-process
-             :name     "flatbuffers-flymake"
-             :noquery  t
-             :connection-type 'pipe
-             :buffer   (generate-new-buffer " *flatbuffers-flymake*")
-             :command  (list flatc
-                             "--binary" "--file-names-only" "--warnings-as-errors"
-                             tmpfile)
-             :sentinel
-             (lambda (proc _event)
-               (when (memq (process-status proc) '(exit signal))
-                 (unwind-protect
-                     (if (with-current-buffer source
-                           (eq proc flatbuffers--flymake-proc))
-                         (with-current-buffer (process-buffer proc)
-                           (goto-char (point-min))
-                           (cl-loop
-                            with orig-re = (concat ", originally at: "
-                                                   (regexp-quote tmpfile)
-                                                   ":\\([0-9]+\\)$")
-                            while (re-search-forward
-                                   (concat "^  " (regexp-quote tmpfile)
-                                           ":\\([0-9]+\\): [0-9]+: "
-                                           "\\(error\\|warning\\): \\(.*\\)$")
-                                   nil t)
-                            for reported-line = (string-to-number (match-string 1))
-                            for type    = (if (string= (match-string 2) "warning")
-                                              :warning :error)
-                            for raw-msg = (match-string 3)
-                            ;; Some errors (e.g. unresolved types) are reported at
-                            ;; the end of the file but carry an "originally at:"
-                            ;; suffix pointing at the true source location.  Use
-                            ;; that line when present and drop the suffix from the
-                            ;; displayed message.
-                            for line = (if (string-match orig-re raw-msg)
-                                           (string-to-number (match-string 1 raw-msg))
-                                         reported-line)
-                            for msg  = (replace-regexp-in-string
-                                        ", originally at:.*$" "" raw-msg)
-                            for (beg . end) = (with-current-buffer source
-                                               (save-restriction
-                                                 (widen)
-                                                 (flymake-diag-region source line)))
-                            collect (flymake-make-diagnostic source beg end type msg)
-                            into diags
-                            finally (funcall report-fn diags)))
-                       (flymake-log :warning "Cancelling obsolete check %s" proc))
-                   (delete-file tmpfile)
-                   (kill-buffer (process-buffer proc)))))))))
+          (make-process
+           :name     "flatbuffers-flymake"
+           :noquery  t
+           :connection-type 'pipe
+           :buffer   (generate-new-buffer " *flatbuffers-flymake*")
+           :command  (list flatc
+                           "--binary" "--file-names-only" "--warnings-as-errors"
+                           tmpfile)
+           :sentinel
+           (lambda (proc _event)
+             (when (memq (process-status proc) '(exit signal))
+               (unwind-protect
+                   (if (with-current-buffer source
+                         (eq proc flatbuffers--flymake-proc))
+                       (with-current-buffer (process-buffer proc)
+                         (goto-char (point-min))
+                         (cl-loop
+                          with orig-re = (concat ", originally at: "
+                                                 (regexp-quote tmpfile)
+                                                 ":\\([0-9]+\\)$")
+                          while (re-search-forward
+                                 (concat "^  " (regexp-quote tmpfile)
+                                         ":\\([0-9]+\\): [0-9]+: "
+                                         "\\(error\\|warning\\): \\(.*\\)$")
+                                 nil t)
+                          for reported-line = (string-to-number (match-string 1))
+                          for type    = (if (string= (match-string 2) "warning")
+                                            :warning :error)
+                          for raw-msg = (match-string 3)
+                          ;; Some errors (e.g. unresolved types) are reported at
+                          ;; the end of the file but carry an "originally at:"
+                          ;; suffix pointing at the true source location.  Use
+                          ;; that line when present and drop the suffix from the
+                          ;; displayed message.
+                          for line = (if (string-match orig-re raw-msg)
+                                         (string-to-number (match-string 1 raw-msg))
+                                       reported-line)
+                          for msg  = (replace-regexp-in-string
+                                      ", originally at:.*$" "" raw-msg)
+                          for (beg . end) = (with-current-buffer source
+                                              (save-restriction
+                                                (widen)
+                                                (flymake-diag-region source line)))
+                          collect (flymake-make-diagnostic source beg end type msg)
+                          into diags
+                          finally (funcall report-fn diags)))
+                     (flymake-log :warning "Cancelling obsolete check %s" proc))
+                 (delete-file tmpfile)
+                 (kill-buffer (process-buffer proc)))))))))
 
 ;;; Mode definition
 
